@@ -71,30 +71,50 @@ class CoverageReporter:
                 paths_to_delete=self.ignored_paths,
             )
 
-    def generate_report(self):
-        inner_location = "swagger-coverage-commandline/bin/swagger-coverage-commandline"
-        
+    def generate_report(
+            self
+            ):
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+
+        inner_location = os.path.join(
+            "swagger-coverage-commandline",
+            "bin",
+            "swagger-coverage-commandline.bat"
+            if platform.system() == "Windows"
+            else "swagger-coverage-commandline",
+        )
         cmd_path = os.path.join(os.path.dirname(__file__), inner_location)
-        assert Path(
-            cmd_path
-        ).exists(), (
+        assert Path(cmd_path).exists(), (
             f"No commandline tools is found in following locations:\n{cmd_path}\n"
         )
+
         command = [cmd_path, "-s", self.swagger_doc_file, "-i", self.output_dir]
         if self.swagger_coverage_config:
             command.extend(["-c", self.swagger_coverage_config])
 
-        # Adjust the file paths for Windows
         if platform.system() == "Windows":
             command = [arg.replace("/", "\\") for arg in command]
-        
-        # Suppress all output if not in debug mode
-        if not DEBUG_MODE:
-            with open(os.devnull, 'w') as devnull:
-                subprocess.run(command, stdout=devnull, stderr=devnull)
-        else:
-            subprocess.run(command)
+            command = ["cmd", "/c", *command]
 
+        if not DEBUG_MODE:
+            try:
+                subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(
+                    "swagger-coverage CommandLine failed. "
+                    f"Command: {e.cmd}\n"
+                    f"Exit code: {e.returncode}\n"
+                    f"STDOUT:\n{e.stdout}\n"
+                    f"STDERR:\n{e.stderr}"
+                ) from e
+        else:
+            subprocess.run(command, check=True)
 
     def cleanup_input_files(self):
         shutil.rmtree(self.output_dir, ignore_errors=True)
