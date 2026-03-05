@@ -71,12 +71,25 @@ class CoverageReporter:
                 paths_to_delete=self.ignored_paths,
             )
 
-    def generate_report(self):
+    import platform
+    import subprocess
+    import os
+    from pathlib import Path
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    def _generate_report_windows(
+            self,
+            command
+            ):
+        """Запуск генерации отчета на Windows через classpath"""
         base_dir = os.path.join(os.path.dirname(__file__), "swagger-coverage-commandline")
         lib_path = os.path.join(base_dir, "lib", "*")
 
+        # Формируем classpath для Java
         classpath = lib_path.replace("/", os.sep)
-        command = [
+        java_command = [
             "java",
             "-cp", classpath,
             "com.github.viclovsky.swagger.coverage.CommandLine",
@@ -84,12 +97,99 @@ class CoverageReporter:
             "-i", self.output_dir,
         ]
         if self.swagger_coverage_config:
+            java_command.extend(["-c", self.swagger_coverage_config])
+
+        # Запускаем с обработкой ошибок
+        try:
+            if not DEBUG_MODE:
+                result = subprocess.run(
+                    java_command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True
+                )
+            else:
+                result = subprocess.run(java_command, check=True)
+            logger.debug("Windows report generation completed successfully")
+            return result
+        except subprocess.CalledProcessError as e:
+            error_msg = (
+                f"Swagger-coverage failed on Windows.\n"
+                f"Command: {' '.join(e.cmd)}\n"
+                f"Exit code: {e.returncode}"
+            )
+            if DEBUG_MODE:
+                error_msg += f"\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+            raise RuntimeError(error_msg) from e
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"Java not found. Make sure Java is installed and in PATH.\n"
+                f"Tried to execute: {' '.join(java_command)}"
+            ) from e
+
+    def generate_report(
+            self
+            ):
+        """Генерация отчета swagger-coverage"""
+        # Создаем выходную директорию
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Для Windows используем специальный метод через Java classpath
+        if platform.system() == "Windows":
+            return self._generate_report_windows()
+
+        # Для Unix систем используем прямой вызов бинарника
+        inner_location = os.path.join(
+            "swagger-coverage-commandline",
+            "bin",
+            "swagger-coverage-commandline"
+        )
+        cmd_path = os.path.join(os.path.dirname(__file__), inner_location)
+
+        # Проверяем существование бинарника
+        if not Path(cmd_path).exists():
+            raise FileNotFoundError(
+                f"Commandline tools not found at:\n{cmd_path}\n"
+                "Make sure swagger-coverage-commandline is properly installed."
+            )
+
+        # Формируем команду
+        command = [cmd_path, "-s", self.swagger_doc_file, "-i", self.output_dir]
+        if self.swagger_coverage_config:
             command.extend(["-c", self.swagger_coverage_config])
 
-        if not DEBUG_MODE:
-            subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        else:
-            subprocess.run(command, check=True)
+        # Запускаем с обработкой ошибок
+        try:
+            if not DEBUG_MODE:
+                result = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=True,
+                )
+            else:
+                result = subprocess.run(command, check=True)
+
+            logger.debug(f"Report generated successfully: {self.output_dir}")
+            return result
+
+        except subprocess.CalledProcessError as e:
+            error_msg = (
+                f"swagger-coverage CommandLine failed.\n"
+                f"Command: {' '.join(e.cmd)}\n"
+                f"Exit code: {e.returncode}\n"
+            )
+            if hasattr(e, 'stdout') and e.stdout:
+                error_msg += f"STDOUT:\n{e.stdout}\n"
+            if hasattr(e, 'stderr') and e.stderr:
+                error_msg += f"STDERR:\n{e.stderr}"
+            raise RuntimeError(error_msg) from e
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"Swagger-coverage binary not found or not executable:\n{cmd_path}\n"
+                "Check if file exists and has execute permissions."
+            ) from e
 
 
     def cleanup_input_files(self):
